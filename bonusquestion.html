@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="./libs/d3.js"></script>
+    <script src="libs/d3jstopojson.v1.js"></script>
+    <title>Geospatial Visualizations</title>
+    <style>
+        #tooltip {
+            position: absolute;
+            opacity: 0;
+            top: 0;
+            left: 0;
+            width: auto;
+            padding: 10px;
+            background: white;
+            font-family: sans-serif;
+            font-size: medium;
+            border-radius: 2px;
+            line-height: 1.5;
+            pointer-events: none;
+        }
+
+        .tooltip-chart {
+            width: 150px;
+            height: 80px;
+        }
+
+        path {
+            stroke-width: 0.5px;
+            stroke: black;
+        }
+
+        path:hover {
+            opacity: 0.8;
+            stroke: black;
+            stroke-width: 2px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .map-title {
+            text-align: center;
+            margin-top: 20px;
+            font-family: Arial, sans-serif;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="tooltip">
+        <svg class="tooltip-chart"></svg>
+    </div>
+    <div class="container">
+        <h1 class="map-title">Geospatial Visualizations</h1>
+        <h3 class="map-title">Fanta Diawara</h3>
+        <div class="fig1"></div> <!-- Map A -->
+        <div class="fig2"></div> <!-- Map B -->
+        <div class="fig3"></div> <!-- Map C -->
+    </div>
+
+    <script>
+        // Set dimensions
+        const windowDims = { width: window.innerWidth, height: window.innerHeight };
+        const svgWidth = windowDims.width / 2;
+        const svgHeight = windowDims.width / 3;
+
+        // Load data files
+        const townsFile = "./data/towns.topojson";
+        const giniFile = "./data/gini_index.csv";
+
+        Promise.all([d3.json(townsFile), d3.csv(giniFile)]).then(data => {
+            const topoData = data[0];
+            const giniData = data[1];
+
+            // Convert TopoJSON to GeoJSON
+            const geojson = topojson.feature(topoData, topoData.objects.ma);
+
+            // Group Gini index data by FIPS
+            const giniByFIPS = d3.group(giniData, d => parseInt(d.id.slice(-5)));
+
+            // Add Gini data to GeoJSON features
+            geojson.features.forEach(feature => {
+                const fips = feature.properties.FIPS_STCO;
+                const giniRecords = giniByFIPS.get(fips);
+                if (giniRecords) {
+                    feature.properties.GiniHistory = giniRecords.map(d => ({
+                        year: +d.year,
+                        value: +d['Estimate!!Gini Index']
+                    }));
+                    feature.properties.GiniIndex2019 = feature.properties.GiniHistory.find(d => d.year === 2019)?.value;
+                }
+            });
+
+            // Function to generate maps
+            const generateMap = (data, container, width, height, colorScale, colorAttr, tooltipAttr) => {
+                const svg = d3.select(container).append("svg")
+                    .attr("width", width)
+                    .attr("height", height);
+
+                const projection = d3.geoMercator().fitSize([width, height], data);
+                const geoPath = d3.geoPath().projection(projection);
+
+                svg.selectAll("path")
+                    .data(data.features)
+                    .enter()
+                    .append("path")
+                    .attr("d", geoPath)
+                    .attr("fill", d => {
+                        const value = d.properties[colorAttr];
+                        return value !== undefined && !isNaN(value) ? colorScale(value) : "#ccc"; // Default to gray
+                    })
+                    .on("mouseenter", (event, d) => {
+                        if (d.properties.GiniHistory) {
+                            const tooltip = d3.select("#tooltip").style("opacity", 1);
+                            tooltip.style("left", event.pageX + "px")
+                                   .style("top", event.pageY + "px");
+
+                            const chartSvg = tooltip.select(".tooltip-chart");
+                            chartSvg.selectAll("*").remove(); // Clear previous chart
+
+                            // Draw the line chart
+                            const giniData = d.properties.GiniHistory;
+                            const margin = { top: 5, right: 5, bottom: 5, left: 5 };
+                            const chartWidth = 150 - margin.left - margin.right;
+                            const chartHeight = 80 - margin.top - margin.bottom;
+
+                            const xScale = d3.scaleLinear()
+                                .domain(d3.extent(giniData, d => d.year))
+                                .range([0, chartWidth]);
+
+                            const yScale = d3.scaleLinear()
+                                .domain([0.4, d3.max(giniData, d => d.value)])
+                                .range([chartHeight, 0]);
+
+                            const line = d3.line()
+                                .x(d => xScale(d.year))
+                                .y(d => yScale(d.value));
+
+                            const chartGroup = chartSvg
+                                .attr("width", 150)
+                                .attr("height", 80)
+                                .append("g")
+                                .attr("transform", `translate(${margin.left},${margin.top})`);
+
+                            // Draw axes
+                            chartGroup.append("path")
+                                .datum(giniData)
+                                .attr("fill", "none")
+                                .attr("stroke", "steelblue")
+                                .attr("stroke-width", 1.5)
+                                .attr("d", line);
+
+                            chartGroup.selectAll("circle")
+                                .data(giniData)
+                                .enter()
+                                .append("circle")
+                                .attr("cx", d => xScale(d.year))
+                                .attr("cy", d => yScale(d.value))
+                                .attr("r", 2)
+                                .attr("fill", "red");
+                        }
+                    })
+                    .on("mousemove", (event) => {
+                        d3.select("#tooltip")
+                            .style("left", event.pageX + "px")
+                            .style("top", event.pageY + "px");
+                    })
+                    .on("mouseleave", () => {
+                        d3.select("#tooltip").style("opacity", 0);
+                    });
+            };
+
+            // Map A: Population in 1980
+            const pop1980Scale = d3.scaleSequential(d3.interpolateBlues)
+                .domain(d3.extent(geojson.features, d => d.properties.POP1980));
+            generateMap(geojson, ".fig1", svgWidth, svgHeight, pop1980Scale, "POP1980", "Population (1980)");
+
+            // Map B: Population Change 1980-2010
+            const popChangeScale = d3.scaleDiverging(d3.interpolateRdBu)
+                .domain(d3.extent(geojson.features, d => d.properties.POPCH80_90));
+            generateMap(geojson, ".fig2", svgWidth, svgHeight, popChangeScale, "POPCH80_90", "Population Change");
+
+            // Map C: Gini Index (2019)
+            const giniScale = d3.scaleSequential(d3.interpolateGreens)
+                .domain(d3.extent(giniData, d => +d['Estimate!!Gini Index']));
+            generateMap(geojson, ".fig3", svgWidth, svgHeight, giniScale, "GiniIndex2019", "Gini Index (2019)");
+        });
+    </script>
+</body>
+
+</html>
